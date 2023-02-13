@@ -1,0 +1,492 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Launch a lambda using a pipeline app.
+ 
+Parameters:
+  ALBListenerPort:
+    Type: String
+    Default: '443'
+    Description: Enter the traffic listener port of your internal Application Load
+      Balancer
+  NLBListenerPort:
+    Type: String
+    Default: '443'
+    Description: Enter the traffic listener port of your internal Network Load
+      Balancer
+  Region:
+    Type: String
+    Default: sa-east-1
+    AllowedValues:
+    - us-east-1
+    - us-east-2
+    - us-west-1
+    - us-west-2
+    - eu-west-1
+    - eu-west-2
+    - eu-west-3
+    - eu-central-1
+    - ap-southeast-1
+    - ap-southeast-2
+    - ap-northeast-1
+    - ap-northeast-1
+    - ap-northeast-2
+    - sa-east-1
+    - ap-south-1
+    - ca-central-1
+    Description: Please specify the region where you want to create your Lambda function
+  PrivateSubnetZoneA:
+    Type:  String
+    Default: ""
+  PrivateSubnetZoneB:
+    Type:  String
+    Default: ""
+  PrivateSubnetZoneC:
+    Type:  String
+    Default: ""
+  TechTeamContactEmail:
+    Description: TAG necessaria com o e-mail (ou grupo) do time responsavel pela conta que ira receber as notificacoes e informacoes sobre os recursos e compliance
+    Type: String
+  VPCID:
+    Description: ID da VPC
+    Type:  String
+  Route53HostedZoneId:
+    Description: Hosted Zone Id
+    Type: String
+  LoadBalancerCertificateArn:
+    Description: Load Balancer certificate Arn
+    Type: String
+    Default: ""
+  EndpointAPIGateway:
+    Description: Endpoint de exposicao
+    Type: String
+  SslPolicy:
+    Description: The security policy that defines which protocols and ciphers are supported.
+    Default: "ELBSecurityPolicy-2016-08"
+    Type: String
+  FeatureName:
+    Description: Nome da feature.
+    Type:  String
+  MicroServiceName:
+    Description: Nome do microservico.
+    Type:  String
+    Default: "infraelb"
+Conditions:
+ 
+  UsePrivateSubnetZoneA: !Not [!Equals [!Ref "PrivateSubnetZoneA", ""]]
+  UsePrivateSubnetZoneB: !Not [!Equals [!Ref "PrivateSubnetZoneB", ""]]
+  UsePrivateSubnetZoneC: !Not [!Equals [!Ref "PrivateSubnetZoneC", ""]]
+  UseTLS: !Not [!Equals [!Ref "LoadBalancerCertificateArn", ""]]
+  UseTCP: !Equals [!Ref "LoadBalancerCertificateArn", ""]
+ 
+Resources:
+ 
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${FeatureName}-${MicroServiceName} security group"
+      SecurityGroupEgress:
+          - IpProtocol: -1
+            Description: Allow all outbound traffic
+            CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+          - IpProtocol: tcp
+            Description: Allow all inbound traffic to ALB
+            FromPort: !Ref ALBListenerPort
+            ToPort: !Ref ALBListenerPort
+            CidrIp: 0.0.0.0/0
+      Tags:
+      - Key: tech-team-email
+        Value: !Ref TechTeamContactEmail
+      VpcId: !Ref VPCID
+   
+  NetworkLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "nlb-${FeatureName}-${MicroServiceName}"
+      Type: network
+      Scheme: internal
+      IpAddressType: ipv4
+      Subnets:
+        - !If [ UsePrivateSubnetZoneA, !Ref PrivateSubnetZoneA, !Ref "AWS::NoValue" ]
+        - !If [ UsePrivateSubnetZoneB, !Ref PrivateSubnetZoneB, !Ref "AWS::NoValue" ]
+        - !If [ UsePrivateSubnetZoneC, !Ref PrivateSubnetZoneC, !Ref "AWS::NoValue" ]
+      LoadBalancerAttributes:
+      - Key: access_logs.s3.enabled
+        Value: true
+      - Key: access_logs.s3.bucket
+        Value: !Ref LogBucketS3
+      - Key: access_logs.s3.prefix
+        Value: !Sub "nlb-${FeatureName}-${MicroServiceName}"
+      Tags:
+      - Key: tech-team-email
+        Value: !Ref TechTeamContactEmail
+      - Key: LoadBalancerType
+        Value: VPCLink
+    DependsOn:
+    - BucketPolicyLogs
+ 
+  NetworkLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref NetworkLoadBalancerTargetGroup
+      LoadBalancerArn: !Ref NetworkLoadBalancer
+      Port: !Ref NLBListenerPort
+      Protocol: TCP
+    DependsOn:
+    - ListenerRule
+ 
+  NetworkLoadBalancerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: !Ref ALBListenerPort
+      Protocol: TCP
+      HealthCheckPort: traffic-port
+      HealthCheckProtocol: !If [ UseTLS, "HTTPS" , "HTTP" ]
+      HealthCheckEnabled: true
+      HealthCheckPath: /health
+      TargetType: alb
+      Targets:
+      - Id: !Ref ApplicationLoadBalancer
+        Port: !Ref ALBListenerPort
+      VpcId: !Ref VPCID
+      Tags:
+      - Key: tech-team-email
+        Value: !Ref TechTeamContactEmail
+    DependsOn:
+    - ApplicationListener
+    - ListenerRule
+   
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "alb-${FeatureName}-${MicroServiceName}"
+      Type: application
+      Scheme: internal
+      SecurityGroups:
+        - !Ref SecurityGroup
+      Subnets:
+        - !If [ UsePrivateSubnetZoneA, !Ref PrivateSubnetZoneA, !Ref "AWS::NoValue" ]
+        - !If [ UsePrivateSubnetZoneB, !Ref PrivateSubnetZoneB, !Ref "AWS::NoValue" ]
+        - !If [ UsePrivateSubnetZoneC, !Ref PrivateSubnetZoneC, !Ref "AWS::NoValue" ]
+      IpAddressType: "ipv4"
+      LoadBalancerAttributes:
+      - Key: access_logs.s3.enabled
+        Value: true
+      - Key: access_logs.s3.bucket
+        Value: !Ref LogBucketS3
+      - Key: access_logs.s3.prefix
+        Value: !Sub "alb-${FeatureName}-${MicroServiceName}"
+      Tags:
+      - Key: tech-team-email
+        Value: !Ref TechTeamContactEmail
+      - Key: LoadBalancerType
+        Value: VPCLink
+    DependsOn:
+    - BucketPolicyLogs
+ 
+  ApplicationListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: fixed-response
+        FixedResponseConfig:
+          StatusCode: '404'
+          ContentType: text/plain
+          MessageBody: 'Servico nao especificado na URI'
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: !Ref ALBListenerPort
+      Protocol: !If [ UseTLS, "HTTPS" , "HTTP" ]
+      SslPolicy: !If [ UseTLS, !Ref SslPolicy , !Ref "AWS::NoValue" ]
+      Certificates:
+      - CertificateArn: !If [ UseTLS, !Ref LoadBalancerCertificateArn , !Ref "AWS::NoValue" ]
+ 
+  ListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: '200'
+            ContentType: text/plain
+            MessageBody: !Sub 'alb-${FeatureName}-${MicroServiceName} is healthy'
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - !Sub "/health"
+      ListenerArn: !Ref ApplicationListener
+      Priority: 1
+ 
+  NLBPrivateRecordSet:
+    Type: 'AWS::Route53::RecordSet'
+    Properties:
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !Sub '${MicroServiceName}.${EndpointAPIGateway}'
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+      - !GetAtt NetworkLoadBalancer.DNSName
+ 
+  ALBPrivateRecordSet:
+    Type: 'AWS::Route53::RecordSet'
+    Properties:
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !Sub 'internal-${MicroServiceName}.${EndpointAPIGateway}'
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+      - !GetAtt ApplicationLoadBalancer.DNSName
+ 
+  VpcLink:
+    Type: AWS::ApiGateway::VpcLink
+    Properties:
+      Description: VPC Link para conectar o API Gateway com o load balancer da API
+      Name: !Sub 'vpclink-${FeatureName}-${MicroServiceName}'
+      TargetArns:
+      - !Ref NetworkLoadBalancer
+    DependsOn:
+    - NetworkLoadBalancer
+ 
+  LogBucketS3:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: LogDeliveryWrite
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: 'Suspended'
+      LifecycleConfiguration:
+        Rules:
+          - Id: Expire
+            Status: Enabled
+            ExpirationInDays: 30
+          - Id: DeleteExpired
+            Status: Enabled
+            ExpiredObjectDeleteMarker: true
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      Tags:
+        - Key: s3_bucket_type
+          Value: 'logging'
+        - Key: s3_data_retention
+          Value: '5'
+        - Key: s3_data_classification
+          Value: 'Interna'
+        - Key: tech-team-email
+          Value: !Ref TechTeamContactEmail
+ 
+  BucketPolicyLogs:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LogBucketS3
+      PolicyDocument:
+        Statement:
+          -
+            Sid: 'AllowSSLRequestOnly'
+            Action:
+              - 's3:*'
+            Effect: 'Deny'
+            Resource:
+            - !Sub "arn:aws:s3:::${LogBucketS3}/*"
+            - !Sub "arn:aws:s3:::${LogBucketS3}"
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+            Principal: '*'
+          -
+            Action:
+              - s3:PutObject
+            Effect: 'Allow'
+            Resource:
+            - !Sub "arn:aws:s3:::${LogBucketS3}/*"
+            - !Sub "arn:aws:s3:::${LogBucketS3}"
+            Condition:
+              StringEquals:
+                's3:x-amz-acl': 'bucket-owner-full-control'
+            Principal:
+              Service: 'delivery.logs.amazonaws.com'
+          -
+            Action:
+              - s3:PutObject
+            Effect: 'Allow'
+            Resource:
+            - !Sub "arn:aws:s3:::${LogBucketS3}/*"
+            - !Sub "arn:aws:s3:::${LogBucketS3}"
+            Principal:
+              AWS: 'arn:aws:iam::507241528517:root'
+          -
+            Action:
+              - s3:GetBucketAcl
+            Effect: 'Allow'
+            Resource:
+            - !Sub "arn:aws:s3:::${LogBucketS3}/*"
+            - !Sub "arn:aws:s3:::${LogBucketS3}"
+            Principal:
+              Service: 'delivery.logs.amazonaws.com'
+ 
+  CloudWatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub ${FeatureName}-${MicroServiceName}
+      RetentionInDays: 3
+ 
+  404MetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Sub ${FeatureName}-${MicroServiceName}
+      FilterPattern: "[ip, identity, user_id, timestamp, request, status_code = 404, size, ...]"
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: !Sub "${FeatureName}-ELB/404s"
+        MetricName: !Sub "${FeatureName}-ELB/404Count"
+    DependsOn: CloudWatchLogGroup
+ 
+  CertificateExpires45Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: UseTLS
+    Properties:
+      AlarmName: !Sub "alarm-${MicroServiceName}_certificate_45d-Severity:2"
+      AlarmDescription:
+        !Join
+          - " "
+          - - "O certificado"
+            - !Ref LoadBalancerCertificateArn
+            - "utilizado no balanceador"
+            - !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+            - "irá expirar nos próximos 45 dias."
+      MetricName: DaysToExpiry
+      Dimensions:
+        - Name: Certificate
+          Value: !Ref LoadBalancerCertificateArn
+      Namespace: "AWS/CertificateManager"
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 45
+      ComparisonOperator: LessThanOrEqualToThreshold
+      TreatMissingData: ignore
+ 
+  CertificateExpires15Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: UseTLS
+    Properties:
+      AlarmName: !Sub "alarm-${MicroServiceName}_certificate_15d-Severity:1"
+      AlarmDescription:
+        !Join
+          - " "
+          - - "O certificado"
+            - !Ref LoadBalancerCertificateArn
+            - "utilizado no balanceador"
+            - !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+            - "irá expirar nos próximos 15 dias."
+      MetricName: DaysToExpiry
+      Dimensions:
+        - Name: Certificate
+          Value: !Ref LoadBalancerCertificateArn
+      Namespace: "AWS/CertificateManager"
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 15
+      ComparisonOperator: LessThanOrEqualToThreshold
+      TreatMissingData: ignore
+ 
+Outputs:
+  NetworkLoadBalancerArn:
+    Description: The Arn of the network load balancer
+    Value: !Ref NetworkLoadBalancer
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-NetworkLoadBalancerArn"
+  NetworkLoadBalancerFullName:
+    Description: The fullname of the network load balancer
+    Value: !GetAtt NetworkLoadBalancer.LoadBalancerFullName
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-NetworkLoadBalancerFullName"
+  NetworkLoadBalancerDns:
+    Description: The DNSName of the network load balancer
+    Value: !GetAtt NetworkLoadBalancer.DNSName
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-NetworkLoadBalancerDns"
+  NetworkLoadBalancerCanonicalHostedZoneID:
+    Description: The CanonicalHostedZoneID of the network load balancer
+    Value: !GetAtt NetworkLoadBalancer.CanonicalHostedZoneID
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-NetworkLoadBalancerCanonicalHostedZoneID"
+  NetworkLoadBalancerRoute:
+    Description: The network load balancer Route 53
+    Value: !Ref NLBPrivateRecordSet
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-NetworkLoadBalancerRoute"
+ 
+ 
+  ApplicationLoadBalancerArn:
+    Description: The Arn of the application load balancer
+    Value: !Ref ApplicationLoadBalancer
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-ApplicationLoadBalancerArn"
+  ApplicationLoadBalancerFullName:
+    Description: The fullname of the application load balancer
+    Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-ApplicationLoadBalancerFullName"
+  ApplicationLoadBalancerDefaultListenerArn:
+    Description: The Arn of the default application load balancer listener
+    Value: !Ref ApplicationListener
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-ApplicationLoadBalancerDefaultListenerArn"
+  ApplicationLoadBalancerDns:
+    Description: The DNSName of the application load balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-ApplicationLoadBalancerDns"
+  ApplicationLoadBalancerCanonicalHostedZoneID:
+    Description: The CanonicalHostedZoneID of the application load balancer
+    Value: !GetAtt ApplicationLoadBalancer.CanonicalHostedZoneID
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-ApplicationLoadBalancerCanonicalHostedZoneID"
+  ApplicationLoadBalancerRoute:
+    Description: The application load balancer Route 53
+    Value: !Ref ALBPrivateRecordSet
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-ApplicationLoadBalancerRoute"
+ 
+  DefaultVpcId:
+    Description: The id of the default VPC
+    Value: !Ref VPCID
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-VpcId"
+  DefaultVpcLinkId:
+    Description: The id of the default VPC Link
+    Value: !Ref VpcLink
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-VpcLinkId"
+  PrivateSubnetZoneA:
+    Condition: UsePrivateSubnetZoneA
+    Description: The id of zone A subnet
+    Value: !Ref PrivateSubnetZoneA
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-SubnetZoneA"
+  PrivateSubnetZoneB:
+    Condition: UsePrivateSubnetZoneB
+    Description: The id of zone B subnet
+    Value: !Ref PrivateSubnetZoneB
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-SubnetZoneB"
+  PrivateSubnetZoneC:
+    Condition: UsePrivateSubnetZoneC
+    Description: The id of zone C subnet
+    Value: !Ref PrivateSubnetZoneC
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-SubnetZoneC"
+  InfraELBSecurityGroup:
+    Description: The security group name
+    Value: !Ref SecurityGroup
+    Export:
+      Name: !Sub "${FeatureName}-${MicroServiceName}-SecurityGroup"
