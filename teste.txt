@@ -1,0 +1,43 @@
+name: Exemplo de Workflow
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  capturar-xsi-type:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout do código
+      uses: actions/checkout@v2
+
+    - name: Instalar dependências
+      run: |
+        pip install lxml
+      # Aqui, você pode adicionar quaisquer outras etapas necessárias para configurar seu ambiente.
+
+    - name: Extrair xsi:type do XML e definir variável de ambiente
+      run: |
+        # Importar a biblioteca lxml
+        from lxml import etree
+
+        # Carregar o XML
+        tree = etree.parse('seu_arquivo.xml')
+        root = tree.getroot()
+
+        # Encontrar o elemento que contém xsi:type
+        job_step_element = root.find(".//{http://com.teste/teste/teste-xmlnsdaaw}job-step")
+
+        # Extrair o valor de xsi:type
+        xsi_type = job_step_element.get('{http://www.w3.org/2001/XMLSchema-instance}type')
+
+        # Definir a variável de ambiente no GitHub Actions com o valor extraído
+        print(f"::set-env name=XSI_TYPE::{xsi_type}")
+      # Substitua 'seu_arquivo.xml' pelo caminho real para seu arquivo XML.
+
+    - name: Utilizar a variável de ambiente
+      run: |
+        # Você pode usar a variável de ambiente definida anteriormente (XSI_TYPE) durante o workflow
+        echo "Valor de xsi:type: $XSI_TYPE"
