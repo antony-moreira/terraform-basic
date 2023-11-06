@@ -1,0 +1,25 @@
+import os
+import csv
+
+# Pasta onde estão os arquivos XML
+pasta_xml = "/caminho/para/sua/pasta/xml"
+
+# Lista para armazenar os nomes dos arquivos XML
+nomes_arquivos = []
+
+# Verifica cada arquivo na pasta
+for nome_arquivo in os.listdir(pasta_xml):
+    if nome_arquivo.endswith(".xml"):
+        nomes_arquivos.append(nome_arquivo)
+
+# Nome do arquivo CSV de saída
+arquivo_csv = "nomes_arquivos.csv"
+
+# Escreve os nomes dos arquivos no arquivo CSV
+with open(arquivo_csv, mode="w", newline="") as csv_file:
+    writer = csv.writer(csv_file)
+    writer.writerow(["Nomes dos Arquivos XML"])  # Cabeçalho
+    for nome_arquivo in nomes_arquivos:
+        writer.writerow([nome_arquivo])
+
+print(f"Arquivo CSV '{arquivo_csv}' criado com sucesso.")
